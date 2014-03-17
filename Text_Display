@@ -1,0 +1,219 @@
+
+#include <inttypes.h>
+#include <ctype.h>
+#include <SPI.h>
+#include <FLASH.h>
+#include <EPD.h>
+#include <Wire.h>
+#include <LM75A.h>
+#include <Adafruit_GFX.h>
+#include <EPD_GFX.h>
+
+// Arduino IO layout
+const int Pin_TEMPERATURE = A0;
+const int Pin_PANEL_ON = 2;
+const int Pin_BORDER = 3;
+const int Pin_DISCHARGE = 4;
+const int Pin_PWM = 5;
+const int Pin_RESET = 6;
+const int Pin_BUSY = 7;
+const int Pin_EPD_CS = 8;
+const int Pin_FLASH_CS = 9;
+const int Pin_SW2 = 12;
+const int Pin_RED_LED = 13;
+
+#define EMBEDDED_ARTISTS
+#define SCREEN_SIZE 270 //BK
+#define EPD_SIZE EPD_2_7
+#define EPD_WIDTH (264)
+#define EPD_HEIGHT (176)
+
+EPD_Class EPD(EPD_SIZE, Pin_PANEL_ON, Pin_BORDER, Pin_DISCHARGE, Pin_PWM, Pin_RESET, Pin_BUSY, Pin_EPD_CS);
+LM75A_Class LM75A;
+
+#define HEIGHT_OF_SEGMENT (11) //<!Proportional to the memory used and inversely proportional to prcessing to display (and also has visual impact adds some delay). If your Arduino hangs at startup reduce this (BUT must be a factor of the screne size)...
+EPD_GFX G_EPD(EPD, EPD_WIDTH, EPD_HEIGHT, LM75A, HEIGHT_OF_SEGMENT);
+
+
+
+// I/O setup
+void setup() {
+	pinMode(Pin_RED_LED, OUTPUT);
+	pinMode(Pin_SW2, INPUT);
+	pinMode(Pin_TEMPERATURE, INPUT);
+	pinMode(Pin_PWM, OUTPUT);
+	pinMode(Pin_BUSY, INPUT);
+	pinMode(Pin_RESET, OUTPUT);
+	pinMode(Pin_PANEL_ON, OUTPUT);
+	pinMode(Pin_DISCHARGE, OUTPUT);
+	pinMode(Pin_BORDER, OUTPUT);
+	pinMode(Pin_EPD_CS, OUTPUT);
+	pinMode(Pin_FLASH_CS, OUTPUT);
+
+	digitalWrite(Pin_RED_LED, LOW);
+	digitalWrite(Pin_PWM, LOW);
+	digitalWrite(Pin_RESET, LOW);
+	digitalWrite(Pin_PANEL_ON, LOW);
+	digitalWrite(Pin_DISCHARGE, LOW);
+	digitalWrite(Pin_BORDER, LOW);
+	digitalWrite(Pin_EPD_CS, LOW);
+	digitalWrite(Pin_FLASH_CS, HIGH);
+	Serial.begin(9600);
+
+
+	FLASH.begin(Pin_FLASH_CS);
+        int temperature = LM75A.read();
+	// set up graphics EPD library
+	// and clear the screen
+	G_EPD.begin();
+
+}
+
+
+void print_epaper_draw_chars( const char * text,
+		const unsigned int width,
+		const unsigned int height,
+		const unsigned int segment_start_row = 0, //The start row being drawn to
+		      unsigned int segment_num_rows  = 0)
+{
+#define MAX_NUM_LINES (7)
+  unsigned char line_lengths[MAX_NUM_LINES]; //Anymore than MAX_NUM_LINES will have issues.....
+  memset(line_lengths, 0, sizeof(line_lengths));
+  unsigned int num_lines = 0;
+  unsigned int max_line_length = 0;
+  unsigned int line_start_j = 0;
+
+  if(segment_num_rows == 0)
+  {
+	  segment_num_rows = height;
+  }
+
+
+  for (unsigned int j = 0; j < strlen(text); ++j)
+  {
+    if(text[j] != '\n')
+    {
+      line_lengths[num_lines] = j-line_start_j+1;
+    }
+    else
+    {
+      num_lines++;
+      line_start_j = j+1;
+    }
+  }
+  if(text[strlen(text)] != '\n')
+  {
+    num_lines++;
+  }
+  assert( num_lines < MAX_NUM_LINES );
+
+  for (unsigned int j = 0; j < num_lines; ++j)
+  {
+      max_line_length = max(max_line_length, line_lengths[j] );
+  }
+
+  
+  const unsigned int char_size_multiplier_width  = width /  ((max_line_length + 1) * (EPD_GFX_CHAR_PADDED_WIDTH));
+  const unsigned int char_size_multiplier_height = height / ((num_lines + 1)       * (EPD_GFX_CHAR_PADDED_HEIGHT));
+  const unsigned int char_size_multiplier = min(char_size_multiplier_width, char_size_multiplier_height);
+  unsigned int line_counter = 0;
+#define CENTRE_TEXT
+#if !defined(CENTRE_TEXT)
+  //Left of screen -- adjusting for a half char buffer at size decided
+  unsigned int x_start = 0 +                    (char_size_multiplier*(EPD_GFX_CHAR_BASE_WIDTH + 1))/2;
+#else
+  //Centre of screen -- adjusting left by half of strlen chars at size decided
+  unsigned int row_width = (line_lengths[line_counter]*char_size_multiplier*(EPD_GFX_CHAR_BASE_WIDTH + 1));
+
+  unsigned int x_start = width/2 -                    row_width/2;
+#endif
+
+  //Centre of each row -- adjusting to fit by subtracting a half char
+  unsigned int row_height = (char_size_multiplier*(EPD_GFX_CHAR_BASE_HEIGHT +1));
+  unsigned int y_start    = line_counter*(height/num_lines) + (height/num_lines)/2 - row_height/2;
+
+  unsigned int       x = x_start;
+  unsigned int       y = y_start;
+
+  for (unsigned int j = 0; j < strlen(text); ++j)
+  {
+    boolean do_new_line  = false;
+    boolean display_char = true;
+    if(text[j] == '\n')
+    {
+      do_new_line  = true;
+      display_char = false;
+    }
+    if(do_new_line)
+    {
+      //SERIAL_DEBUG_PRINTLN_F("New line");
+      line_counter++;
+#if 1
+      //Centreing in each row
+      y_start    = line_counter*(height/num_lines) + (height/num_lines)/2 - row_height/2;
+#else
+      //Not centreing at each row
+      y_start    = y + row_height;
+#endif
+#if defined(CENTRE_TEXT)
+      row_width = (line_lengths[line_counter]*char_size_multiplier*(EPD_GFX_CHAR_BASE_WIDTH + 1));
+      x_start = width/2 - row_width/2;
+#endif
+      x = x_start;
+      y = y_start;
+    }
+
+    if(display_char)
+    {
+      G_EPD.drawChar(x, y, text[j], EPD_GFX::BLACK, EPD_GFX::WHITE, char_size_multiplier );
+      x += (char_size_multiplier * (EPD_GFX_CHAR_BASE_WIDTH + 1));
+    }
+  }
+}
+
+
+
+
+
+// main loop
+void loop() {
+       
+        int temperature = LM75A.read();
+
+  
+	int h        = G_EPD.real_height();
+	int seg_h    = G_EPD.height();
+	int w        = G_EPD.width();
+        unsigned int segments = G_EPD.get_segment_count();
+
+
+        for(unsigned int s=0; s < segments; s++)
+        {
+          
+          G_EPD.set_current_segment(s);
+          
+          // Draws a border
+          G_EPD.drawRect(1, 1, w - 2, h - 2, EPD_GFX::BLACK);//construction seems to be pixel width, pixel height, location x, location y, colour
+          G_EPD.drawRect(3, 3, w - 6, h - 6, EPD_GFX::BLACK);
+
+          
+          int start_row = s*seg_h;
+          const char* text = "@Hardware_Hacks\nE-Paper!";
+          
+            //Write text across segments
+            print_epaper_draw_chars( text, w, h, start_row, seg_h );
+          
+          
+
+          // Update the display -- first and last segments of a loop are indicated
+          G_EPD.display( false, s==0, s==(segments-1) );
+          
+        }
+
+delay(3000);
+	Serial.println("Clearing.");
+        G_EPD.clear( );
+}
+
+
+
